@@ -1,0 +1,90 @@
+groups:
+  - name: datamind-slo-alerts
+    interval: 30s
+    rules:
+
+      # ---- LLM Latency SLOs ----
+      - alert: LLMFirstTokenLatencyHigh
+        expr: histogram_quantile(0.99, rate(litellm_request_duration_seconds_bucket{type="first_token"}[5m])) > 0.6
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "LLM p99 first token > 600ms SLO"
+          description: "p99 first token latency is {{ $value }}s (SLO: 600ms)"
+
+      - alert: LLMTotalLatencyCritical
+        expr: histogram_quantile(0.99, rate(litellm_request_duration_seconds_bucket[5m])) > 2.0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "LLM p99 total latency > 2s SLO"
+
+      # ---- Dashboard Query SLOs ----
+      - alert: DashboardLoadLatencyHigh
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{route="/api/dashboard"}[5m])) > 0.3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dashboard p99 load > 300ms SLO"
+
+      # ---- NL-to-SQL SLOs ----
+      - alert: NLtoSQLLatencyHigh
+        expr: histogram_quantile(0.99, rate(agent_task_duration_seconds_bucket{task_type="nl_to_sql"}[5m])) > 3.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NL-to-SQL p99 > 3s SLO"
+
+      # ---- Hallucination Score Alerts ----
+      - alert: HallucinationScoreDegraded
+        expr: avg(langfuse_eval_score{metric="faithfulness"}) < 0.7
+        for: 10m
+        labels:
+          severity: critical
+          team: ai-quality
+        annotations:
+          summary: "Average faithfulness score below 0.7 threshold"
+
+      # ---- Cost Anomaly Alerts ----
+      - alert: AgentCostSpike
+        expr: rate(litellm_total_cost_usd[1h]) > 2 * avg_over_time(rate(litellm_total_cost_usd[1h])[7d:1h])
+        for: 15m
+        labels:
+          severity: warning
+          team: finops
+        annotations:
+          summary: "LLM cost spike — agent exceeding 2x 7-day rolling average"
+
+      # ---- Error Rate SLOs ----
+      - alert: APIErrorRateHigh
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API error rate > 1%"
+
+      # ---- DSR SLA Alert ----
+      - alert: DSRSLABreach
+        expr: datamind_dsr_age_hours{status="in_progress"} > 48
+        labels:
+          severity: critical
+          team: dpo
+        annotations:
+          summary: "DSR request approaching 72h GDPR deadline"
+
+      # ---- Digital Worker SLA ----
+      - alert: WorkerSLABreach
+        expr: datamind_worker_task_duration_seconds > datamind_worker_sla_seconds
+        for: 1m
+        labels:
+          severity: warning
+          team: digital-labor
+        annotations:
+          summary: "Digital Worker {{ $labels.worker_name }} breached SLA"

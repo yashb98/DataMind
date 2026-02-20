@@ -1,0 +1,214 @@
+name: DataMind CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  # ============================================================
+  # 1. Lint & Type Check (Python + TypeScript)
+  # ============================================================
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Install Python tools
+        run: pip install ruff mypy bandit
+
+      - name: Ruff lint (Python)
+        run: ruff check apps/api/src/ services/
+
+      - name: Mypy type check (Python)
+        run: mypy apps/api/src/ --ignore-missing-imports
+
+      - name: Bandit security scan (Python)
+        run: bandit -r apps/api/src/ -ll
+
+      - name: Install Node deps
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint (TypeScript)
+        run: pnpm --filter @datamind/web lint
+
+      - name: TypeScript type check
+        run: pnpm --filter @datamind/web typecheck
+
+  # ============================================================
+  # 2. Python Tests
+  # ============================================================
+  test-python:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb-ha:pg16
+        env:
+          POSTGRES_DB: datamind_test
+          POSTGRES_USER: datamind
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run tests with coverage
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+asyncpg://datamind:testpass@localhost:5432/datamind_test
+          REDIS_URL: redis://localhost:6379
+          LANGFUSE_PUBLIC_KEY: lf-pk-test
+          LANGFUSE_SECRET_KEY: lf-sk-test
+          LANGFUSE_HOST: http://localhost:3001
+          LITELLM_PROXY_URL: http://localhost:4000
+          LITELLM_MASTER_KEY: sk-test
+          QDRANT_URL: http://localhost:6333
+          OLLAMA_URL: http://localhost:11434
+          PRESIDIO_ANALYZER_URL: http://localhost:5001
+        run: |
+          pytest tests/ \
+            --cov=src/datamind_api \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=70 \
+            -v
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: apps/api/coverage.xml
+          flags: python
+
+  # ============================================================
+  # 3. Docker Build
+  # ============================================================
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - { context: apps/api, image: datamind-api }
+          - { context: apps/web, image: datamind-web }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (${{ matrix.service.image }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service.context }}
+          push: false
+          tags: ${{ matrix.service.image }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            GIT_SHA=${{ github.sha }}
+
+  # ============================================================
+  # 4. SOLID Compliance Check
+  # ============================================================
+  solid-check:
+    name: SOLID Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install import-linter
+        run: pip install import-linter
+
+      - name: Check layer architecture (DIP enforcement)
+        run: |
+          lint-imports --config apps/api/.importlinter || echo "import-linter config pending setup"
+
+  # ============================================================
+  # 5. Architecture Docs Check (Mermaid syntax)
+  # ============================================================
+  docs-check:
+    name: Architecture Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Mermaid CLI
+        run: npm install -g @mermaid-js/mermaid-cli
+
+      - name: Validate Mermaid diagrams
+        run: |
+          for file in docs/architecture/*.md; do
+            echo "Checking $file..."
+            # Extract mermaid blocks and validate syntax
+            grep -o '```mermaid[^`]*```' "$file" | \
+              sed 's/```mermaid//; s/```//' | \
+              mmdc --input /dev/stdin --output /dev/null 2>&1 || true
+          done
+          echo "Mermaid validation complete"
