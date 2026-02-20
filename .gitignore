@@ -1,0 +1,82 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Environment files (never commit)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Turbo
+.turbo/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (local dev only)
+docker-volumes/
+
+# Logs
+*.log
+logs/
+loki-data/
+
+# ML artifacts (use MLflow/MinIO instead)
+*.pt
+*.safetensors
+*.gguf
+*.ckpt
+mlruns/
+wandb/
+
+# Secrets (HashiCorp Vault handles these)
+*.pem
+*.key
+*.crt
+secrets/
+
+# Coverage
+coverage/
+.coverage
+htmlcov/
+
+# DuckDB
+*.duckdb
+*.duckdb.wal
+
+# Terraform state (use remote state)
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Python virtual envs
+venv/
+.venv/
+env/
+
+# Go binaries
+*.exe
+*.test
+vendor/

@@ -1,0 +1,83 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape Prometheus metrics as well
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: otel-collector
+          static_configs:
+            - targets: ["localhost:8888"]
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  resource:
+    attributes:
+      - key: service.env
+        value: ${DATAMIND_ENV}
+        action: upsert
+      - key: service.cluster
+        value: datamind-local
+        action: upsert
+
+  # PII scrubbing in spans before export (belt-and-suspenders)
+  redaction:
+    allow_all_keys: true
+    blocked_values:
+      - "(?i)password"
+      - "(?i)api.?key"
+      - "(?i)secret"
+      - "[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}"  # email regex
+
+exporters:
+  # Send to Jaeger for distributed trace UI
+  otlp/jaeger:
+    endpoint: jaeger:14250
+    tls:
+      insecure: true
+
+  # Send metrics to Prometheus
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+  # Send logs to Loki
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+
+  # Debug (development only)
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, redaction, batch]
+      exporters: [otlp/jaeger, debug]
+
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheus]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, redaction, batch]
+      exporters: [loki]
+
+  extensions:
+    zpages:
+      endpoint: 0.0.0.0:55679
