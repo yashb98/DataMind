@@ -1,9 +1,11 @@
 """
 DataMind FastAPI Application — Entry Point
 Day 1: Health checks, CORS, OpenTelemetry, router registration skeleton.
+Day 3: TenantIsolationMiddleware, Redis connection pool, Prometheus metrics mount.
 """
 from contextlib import asynccontextmanager
 
+import redis.asyncio as aioredis
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,8 +15,10 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from prometheus_client import make_asgi_app
 
 from datamind_api.config import settings
+from datamind_api.middleware.tenant import TenantIsolationMiddleware
 from datamind_api.routers import health, llm, agents, datasets, workers, gdpr
 
 log = structlog.get_logger(__name__)
@@ -37,7 +41,15 @@ async def lifespan(app: FastAPI):
     """Application lifecycle — startup and shutdown."""
     log.info("datamind.api.startup", version="0.1.0", env=settings.env)
     _configure_otel()
+
+    # Redis connection pool — shared across all requests
+    app.state.redis = aioredis.from_url(
+        settings.redis_url, decode_responses=True, max_connections=20
+    )
+
     yield
+
+    await app.state.redis.aclose()
     log.info("datamind.api.shutdown")
 
 
@@ -50,7 +62,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ---- Middleware ----
+# ---- Middleware (applied in reverse order — last added = first executed) ----
+# 1. CORS (outermost)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -58,9 +71,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# 2. Tenant isolation (reads Kong-injected headers, establishes context)
+app.add_middleware(TenantIsolationMiddleware)
 
 # ---- OpenTelemetry instrumentation ----
 FastAPIInstrumentor.instrument_app(app)
+
+# ---- Prometheus metrics ----
+app.mount("/metrics", make_asgi_app())
 
 # ---- Routers ----
 app.include_router(health.router, prefix="/health", tags=["Health"])
