@@ -45,13 +45,13 @@ jobs:
         run: pip install ruff mypy bandit
 
       - name: Ruff lint (Python)
-        run: ruff check apps/api/src/ services/
+        run: ruff check apps/api/src/ services/slm-router/src/ services/auth/src/ services/embedding/src/
 
       - name: Mypy type check (Python)
-        run: mypy apps/api/src/ --ignore-missing-imports
+        run: mypy apps/api/src/ services/slm-router/src/ services/auth/src/ --ignore-missing-imports
 
       - name: Bandit security scan (Python)
-        run: bandit -r apps/api/src/ -ll
+        run: bandit -r apps/api/src/ services/slm-router/src/ services/auth/src/ -ll
 
       - name: Install Node deps
         run: pnpm install --frozen-lockfile
@@ -63,7 +63,7 @@ jobs:
         run: pnpm --filter @datamind/web typecheck
 
   # ============================================================
-  # 2. Python Tests
+  # 2. Python Tests (unit tests for all services)
   # ============================================================
   test-python:
     name: Python Tests
@@ -104,11 +104,12 @@ jobs:
       - name: Install uv
         run: pip install uv
 
-      - name: Install dependencies
+      # ---- FastAPI API ----
+      - name: Install API dependencies
         working-directory: apps/api
         run: uv pip install --system -e ".[dev]"
 
-      - name: Run tests with coverage
+      - name: Run API tests
         working-directory: apps/api
         env:
           DATABASE_URL: postgresql+asyncpg://datamind:testpass@localhost:5432/datamind_test
@@ -124,19 +125,71 @@ jobs:
         run: |
           pytest tests/ \
             --cov=src/datamind_api \
-            --cov-report=xml \
+            --cov-report=xml:coverage-api.xml \
             --cov-report=term-missing \
             --cov-fail-under=70 \
             -v
 
-      - name: Upload coverage
+      # ---- SLM Router ----
+      - name: Install SLM Router dependencies
+        working-directory: services/slm-router
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run SLM Router unit tests
+        working-directory: services/slm-router
+        env:
+          OLLAMA_URL: http://localhost:11434
+          REDIS_URL: redis://localhost:6379
+          LANGFUSE_PUBLIC_KEY: lf-pk-test
+          LANGFUSE_SECRET_KEY: lf-sk-test
+          LANGFUSE_HOST: http://localhost:3001
+        run: |
+          pytest tests/ \
+            --cov=src/slm_router \
+            --cov-report=xml:coverage-slm.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=75 \
+            -v
+
+      # ---- Auth Service ----
+      - name: Install Auth Service dependencies
+        working-directory: services/auth
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run Auth Service unit tests
+        working-directory: services/auth
+        env:
+          DATABASE_URL: postgresql+asyncpg://datamind:testpass@localhost:5432/datamind_test
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET_KEY: test-secret-key-for-ci
+        run: |
+          pytest tests/ \
+            --cov=src/auth_service \
+            --cov-report=xml:coverage-auth.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            -v
+
+      - name: Upload coverage (API)
         uses: codecov/codecov-action@v4
         with:
-          file: apps/api/coverage.xml
-          flags: python
+          file: apps/api/coverage-api.xml
+          flags: api
+
+      - name: Upload coverage (SLM Router)
+        uses: codecov/codecov-action@v4
+        with:
+          file: services/slm-router/coverage-slm.xml
+          flags: slm-router
+
+      - name: Upload coverage (Auth)
+        uses: codecov/codecov-action@v4
+        with:
+          file: services/auth/coverage-auth.xml
+          flags: auth
 
   # ============================================================
-  # 3. Docker Build
+  # 3. Docker Build (all services in parallel)
   # ============================================================
   docker-build:
     name: Docker Build
@@ -144,8 +197,11 @@ jobs:
     strategy:
       matrix:
         service:
-          - { context: apps/api, image: datamind-api }
-          - { context: apps/web, image: datamind-web }
+          - { context: apps/api,         image: datamind-api }
+          - { context: apps/web,         image: datamind-web }
+          - { context: services/auth,    image: datamind-auth,      dockerfile: Dockerfile }
+          - { context: services/embedding, image: datamind-embedding, dockerfile: Dockerfile }
+          - { context: services/slm-router, image: datamind-slm-router, dockerfile: src/slm_router/Dockerfile }
     steps:
       - uses: actions/checkout@v4
 

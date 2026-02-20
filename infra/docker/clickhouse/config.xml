@@ -1,0 +1,41 @@
+<clickhouse>
+    <!-- DataMind ClickHouse Custom Config -->
+
+    <!-- Listen on all interfaces -->
+    <listen_host>0.0.0.0</listen_host>
+
+    <!-- Max memory 4GB for dev (raise in prod) -->
+    <max_server_memory_usage_to_ram_ratio>0.5</max_server_memory_usage_to_ram_ratio>
+    <max_concurrent_queries>100</max_concurrent_queries>
+
+    <!-- Enable compression -->
+    <compression>
+        <case>
+            <method>zstd</method>
+            <level>3</level>
+        </case>
+    </compression>
+
+    <!-- Query log for observability -->
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+        <ttl>event_date + INTERVAL 30 DAY DELETE</ttl>
+    </query_log>
+
+    <!-- Mark cache for faster repeated queries -->
+    <mark_cache_size>5368709120</mark_cache_size>
+
+    <!-- HTTP keep-alive for Arrow Flight and internal APIs -->
+    <keep_alive_timeout>10</keep_alive_timeout>
+
+    <!-- Format: enable JSON output for API consumers -->
+    <output_format_json_quote_64bit_integers>0</output_format_json_quote_64bit_integers>
+    <output_format_json_quote_denormals>1</output_format_json_quote_denormals>
+
+    <!-- Profiling for Langfuse -->
+    <send_crash_reports>
+        <enabled>false</enabled>
+    </send_crash_reports>
+</clickhouse>

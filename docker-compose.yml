@@ -2,7 +2,8 @@ name: datamind
 
 # ============================================================
 # DataMind — Local Development Docker Compose
-# Day 1 Foundation: 14 core infrastructure services
+# Day 2: +SLM Router, Embedding Service, Kong API Gateway
+# Day 3: +Auth Service, updated Kong with JWT+ABAC
 #
 # Usage:
 #   docker compose --profile dev up -d          # all dev services
@@ -480,6 +481,148 @@ services:
     profiles: ["dev", "gdpr"]
 
   # ============================================================
+  # Day 2 — SLM Router (intent classification + tier routing)
+  # ============================================================
+  slm-router:
+    build:
+      context: ./services/slm-router
+      dockerfile: src/slm_router/Dockerfile
+    container_name: datamind-slm-router
+    <<: [*restart-policy, *logging]
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-lf-pk-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-lf-sk-dev}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      OTEL_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "8020:8020"
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8020/health/liveness').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    profiles: ["dev", "core"]
+
+  # ============================================================
+  # Day 2 — Embedding Service (BAAI/bge-m3 + Qdrant init)
+  # ============================================================
+  embedding:
+    build:
+      context: ./services/embedding
+    container_name: datamind-embedding
+    <<: [*restart-policy, *logging]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      OTEL_ENDPOINT: http://otel-collector:4317
+      # Model cache dir — mount volume for fast restarts
+      HF_HOME: /app/.cache/huggingface
+    ports:
+      - "8030:8030"
+    volumes:
+      - embedding-model-cache:/app/.cache/huggingface
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8030/health/liveness').raise_for_status()"]
+      interval: 60s
+      timeout: 30s
+      start_period: 120s   # Model download can take time on first run
+      retries: 5
+    profiles: ["dev", "core"]
+
+  # ============================================================
+  # Day 3 — Kong API Gateway (declarative config)
+  # ============================================================
+  kong-migrations:
+    image: kong:3.8
+    container_name: datamind-kong-migrations
+    command: kong migrations bootstrap
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres
+      KONG_PG_PORT: 5432
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: ${POSTGRES_USER:-datamind}
+      KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["dev", "core"]
+
+  kong:
+    image: kong:3.8
+    container_name: datamind-kong
+    <<: [*restart-policy, *logging]
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres
+      KONG_PG_PORT: 5432
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: ${POSTGRES_USER:-datamind}
+      KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_PLUGINS: bundled,jwt,rate-limiting,cors,request-transformer,response-transformer,prometheus
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+    ports:
+      - "8000:8000"   # Proxy (external traffic)
+      - "8001:8001"   # Admin API (internal only in prod)
+      - "8443:8443"   # HTTPS proxy
+    volumes:
+      - ./infra/docker/kong/kong.yml:/etc/kong/kong.yml:ro
+    depends_on:
+      kong-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    profiles: ["dev", "core"]
+
+  # ============================================================
+  # Day 3 — Auth Service (JWT + multi-tenancy)
+  # ============================================================
+  auth:
+    build:
+      context: ./services/auth
+    container_name: datamind-auth
+    <<: [*restart-policy, *logging]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-datamind}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/datamind
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      JWT_SECRET_KEY: ${DATAMIND_SECRET_KEY:-change-me-in-production}
+      VAULT_URL: ${VAULT_URL:-http://vault:8200}
+      VAULT_TOKEN: ${VAULT_TOKEN:-root-token-dev-only}
+      OTEL_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "8010:8010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8010/health/liveness').raise_for_status()"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    profiles: ["dev", "core"]
+
+  # ============================================================
   # 14. Observability Stack (Grafana + Prometheus + Loki + Jaeger)
   # ============================================================
   prometheus:
@@ -570,6 +713,7 @@ volumes:
   zookeeper-data:
   zookeeper-logs:
   ollama-models:
+  embedding-model-cache:
   prometheus-data:
   grafana-data:
   loki-data:

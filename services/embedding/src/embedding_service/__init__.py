@@ -1,0 +1,1 @@
+"""DataMind Embedding Service."""
