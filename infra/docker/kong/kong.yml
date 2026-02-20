@@ -1,0 +1,227 @@
+# DataMind — Kong Gateway Declarative Config (DB-less mode fallback)
+# Day 3: Full API gateway with JWT auth, rate limiting, CORS, observability
+# Applied via: deck sync or mounted volume in DB mode
+
+_format_version: "3.0"
+_transform: true
+
+# ============================================================
+# Services — upstream backends
+# ============================================================
+services:
+
+  # ---- FastAPI Core API ---------------------------------------------------
+  - name: datamind-api
+    url: http://datamind-api:8000
+    connect_timeout: 5000
+    write_timeout: 60000
+    read_timeout: 60000
+    retries: 3
+    routes:
+      - name: api-route
+        paths: ["/api"]
+        strip_path: false
+        methods: [GET, POST, PUT, DELETE, PATCH, OPTIONS]
+        headers:
+          X-DataMind-Version: ["2.0"]
+
+  # ---- LiteLLM Proxy -------------------------------------------------------
+  - name: litellm-proxy
+    url: http://litellm:4000
+    connect_timeout: 5000
+    write_timeout: 300000   # 5 min for long LLM streams
+    read_timeout: 300000
+    routes:
+      - name: llm-route
+        paths: ["/llm"]
+        strip_path: true
+        methods: [POST, GET, OPTIONS]
+
+  # ---- SLM Router ----------------------------------------------------------
+  - name: slm-router
+    url: http://slm-router:8020
+    connect_timeout: 3000
+    write_timeout: 30000
+    read_timeout: 30000
+    routes:
+      - name: router-route
+        paths: ["/route"]
+        strip_path: false
+        methods: [POST, OPTIONS]
+
+  # ---- Auth Service --------------------------------------------------------
+  - name: auth-service
+    url: http://auth:8010
+    connect_timeout: 3000
+    write_timeout: 10000
+    read_timeout: 10000
+    routes:
+      - name: auth-route
+        paths: ["/auth"]
+        strip_path: false
+        methods: [GET, POST, OPTIONS]
+
+  # ---- Embedding Service (internal only — not exposed publicly) -----------
+  - name: embedding-service
+    url: http://embedding:8030
+    routes:
+      - name: embed-route
+        paths: ["/embed-internal"]
+        strip_path: true
+        methods: [POST]
+        # Only allow from internal services via header check
+        headers:
+          X-Internal-Service: ["true"]
+
+  # ---- Health Aggregation --------------------------------------------------
+  - name: health-aggregator
+    url: http://datamind-api:8000
+    routes:
+      - name: health-route
+        paths: ["/health"]
+        strip_path: false
+        methods: [GET]
+        # No auth on health endpoints
+
+# ============================================================
+# Plugins — applied globally or per-service
+# ============================================================
+plugins:
+
+  # ---- CORS (global) -------------------------------------------------------
+  - name: cors
+    config:
+      origins:
+        - "http://localhost:3000"    # Next.js dev
+        - "http://localhost:3001"    # Langfuse (iframe widgets)
+        - "https://*.datamind.ai"    # Production domains
+      methods: [GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD]
+      headers:
+        - Accept
+        - Accept-Version
+        - Content-Length
+        - Content-MD5
+        - Content-Type
+        - Date
+        - Authorization
+        - X-Tenant-ID
+        - X-Request-ID
+        - X-DataMind-Version
+      exposed_headers:
+        - X-Request-ID
+        - X-RateLimit-Limit
+        - X-RateLimit-Remaining
+      credentials: true
+      max_age: 3600
+      preflight_continue: false
+
+  # ---- Request ID injection (global) --------------------------------------
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid#counter
+      echo_downstream: true
+
+  # ---- Prometheus metrics (global) ----------------------------------------
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
+      upstream_health_metrics: true
+
+  # ---- Rate limiting — Standard tier (per tenant via JWT consumer) --------
+  - name: rate-limiting
+    service: datamind-api
+    config:
+      minute: 300
+      hour: 5000
+      policy: redis
+      redis_host: redis
+      redis_port: 6379
+      redis_password: "${REDIS_PASSWORD}"
+      fault_tolerant: true
+      hide_client_headers: false
+      limit_by: consumer
+
+  # ---- Rate limiting — LLM endpoints (tighter limits) --------------------
+  - name: rate-limiting
+    service: litellm-proxy
+    config:
+      minute: 60
+      hour: 500
+      policy: redis
+      redis_host: redis
+      redis_port: 6379
+      redis_password: "${REDIS_PASSWORD}"
+      fault_tolerant: true
+      limit_by: consumer
+
+  # ---- JWT Authentication — all API routes (except /health, /auth) --------
+  - name: jwt
+    service: datamind-api
+    config:
+      key_claim_name: kid
+      claims_to_verify: [exp, nbf]
+      maximum_expiration: 86400   # 24h max token lifetime
+      header_names: [Authorization]
+      cookie_names: []
+      uri_param_names: []
+      anonymous: null             # reject unauthenticated requests
+
+  - name: jwt
+    service: litellm-proxy
+    config:
+      key_claim_name: kid
+      claims_to_verify: [exp]
+      header_names: [Authorization]
+
+  # ---- Request transformer — inject tenant context from JWT ---------------
+  - name: request-transformer
+    service: datamind-api
+    config:
+      add:
+        headers:
+          - "X-Tenant-ID:$(consumer.custom_id)"
+          - "X-Kong-Consumer:$(consumer.username)"
+
+  # ---- Response transformer — add security headers -------------------------
+  - name: response-transformer
+    config:
+      add:
+        headers:
+          - "X-Content-Type-Options:nosniff"
+          - "X-Frame-Options:DENY"
+          - "X-XSS-Protection:1; mode=block"
+          - "Referrer-Policy:strict-origin-when-cross-origin"
+          - "Strict-Transport-Security:max-age=31536000; includeSubDomains"
+
+  # ---- IP restriction — Admin API (only internal network) -----------------
+  - name: ip-restriction
+    service: auth-service
+    config:
+      allow:
+        - "10.0.0.0/8"
+        - "172.16.0.0/12"
+        - "192.168.0.0/16"
+        - "127.0.0.1"
+
+# ============================================================
+# Consumers — one per tenant (bootstrapped via Auth Service)
+# ============================================================
+consumers:
+  # System consumer for internal service-to-service calls
+  - username: datamind-internal
+    custom_id: "00000000-0000-0000-0000-000000000000"
+    jwt_secrets:
+      - key: datamind-internal-key
+        algorithm: HS256
+        secret: "${DATAMIND_SECRET_KEY}"
+
+  # Demo tenant consumer (dev only)
+  - username: demo-tenant
+    custom_id: "00000000-0000-0000-0000-000000000001"
+    jwt_secrets:
+      - key: demo-tenant-key
+        algorithm: HS256
+        secret: "demo-secret-change-in-prod"
