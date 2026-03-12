@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "datamind-orchestration-engine"
+version = "0.1.0"
+description = "DataMind Orchestration Engine — LangGraph orchestrator, 8-layer anti-hallucination, A2A Digital Worker protocol."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    # LangGraph — lowest latency agent framework (2026 AIMultiple benchmark)
+    "langgraph>=0.2.0",
+    "langchain-core>=0.3.0",
+    "langchain-community>=0.3.0",
+    # LLM
+    "litellm>=1.55.0",
+    "langfuse>=2.50.0",
+    "langfuse[langchain]>=2.50.0",
+    # Instructor for structured outputs (L5 anti-hallucination)
+    "instructor>=1.6.0",
+    # Storage
+    "redis[hiredis]>=5.2.0",
+    "asyncpg>=0.30.0",
+    "httpx>=0.28.0",
+    # Observability
+    "structlog>=24.4.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-otlp>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "prometheus-client>=0.21.0",
+    "tenacity>=9.0.0",
+    "python-multipart>=0.0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-benchmark>=4.0.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "bandit>=1.8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/orchestration_engine"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = ["S101", "S105"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
