@@ -665,6 +665,79 @@ services:
     profiles: ["dev", "core"]
 
   # ============================================================
+  # Day 11 — MCP Report Generator (WeasyPrint PDF + PPTX + Merkle provenance)
+  # ============================================================
+  mcp-report-generator:
+    build:
+      context: ./services/mcp-report-generator
+    container_name: datamind-mcp-report-generator
+    <<: [*restart-policy, *logging]
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      MINIO_BUCKET: datamind-reports
+      MINIO_SECURE: "false"
+      PINATA_API_KEY: ${PINATA_API_KEY:-}
+      PINATA_SECRET_KEY: ${PINATA_SECRET_KEY:-}
+      PINATA_ENDPOINT: https://api.pinata.cloud
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-datamind}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-datamind}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      OTEL_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "8080:8080"
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8080/health/liveness').raise_for_status()"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    profiles: ["dev", "core"]
+
+  # ============================================================
+  # Day 11 — MCP dbt Runner (dbt model execution + lineage)
+  # ============================================================
+  mcp-dbt-runner:
+    build:
+      context: ./services/mcp-dbt-runner
+    container_name: datamind-mcp-dbt-runner
+    <<: [*restart-policy, *logging]
+    environment:
+      DBT_PROJECT_DIR: /dbt/project
+      DBT_PROFILES_DIR: /dbt/profiles
+      DBT_TARGET: ${DBT_TARGET:-dev}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-datamind}
+      POSTGRES_USER: ${POSTGRES_USER:-datamind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_SCHEMA: ${DBT_SCHEMA:-dbt_datamind}
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-lf-pk-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-lf-sk-dev}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      OTEL_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8090/health/liveness').raise_for_status()"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    profiles: ["dev", "core"]
+
+  # ============================================================
   # Day 10 — Orchestration Engine (LangGraph + Anti-Hallucination + A2A)
   # ============================================================
   orchestration-engine:
@@ -678,6 +751,7 @@ services:
       SLM_ROUTER_URL: http://slm-router:8020
       MCP_SQL_EXECUTOR_URL: http://mcp-sql-executor:8040/mcp/
       MCP_KNOWLEDGE_BASE_URL: http://mcp-knowledge-base:8050/mcp/
+      MCP_REPORT_GENERATOR_URL: http://mcp-report-generator:8080/mcp/
       REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-lf-pk-dev}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-lf-sk-dev}
@@ -699,11 +773,67 @@ services:
         condition: service_healthy
       mcp-knowledge-base:
         condition: service_healthy
+      mcp-report-generator:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8060/health/liveness').raise_for_status()"]
       interval: 20s
       timeout: 10s
       retries: 5
+    profiles: ["dev", "core"]
+
+  # ============================================================
+  # Day 11 — MCP Visualization Server (ECharts 5, 25 chart types)
+  # ============================================================
+  mcp-visualization:
+    build:
+      context: ./services/mcp-visualization
+    container_name: datamind-mcp-visualization
+    <<: [*restart-policy, *logging]
+    environment:
+      PORT: "8070"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "8070:8070"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8070/health/liveness"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    profiles: ["dev", "core"]
+
+  # ============================================================
+  # Day 11 — MCP Data Connector (80+ source connectors + CDC)
+  # Tools: connect, ingest, profile_schema
+  # ============================================================
+  mcp-data-connector:
+    build:
+      context: ./services/mcp-data-connector
+    container_name: datamind-mcp-data-connector
+    <<: [*restart-policy, *logging]
+    environment:
+      PORT: "8100"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      MINIO_BUCKET: datamind-iceberg
+      MINIO_SECURE: "false"
+      NESSIE_ENDPOINT: http://nessie:19120
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      MAX_CONNECTIONS: "50"
+    ports:
+      - "8100:8100"
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8100/health/liveness"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     profiles: ["dev", "core"]
 
   # ============================================================
