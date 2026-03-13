@@ -978,6 +978,110 @@ services:
       - "14250:14250" # gRPC
     profiles: ["dev", "observability"]
 
+  # ============================================================
+  # Phase 4 — MLflow Experiment Tracking + Model Registry
+  # ============================================================
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.18.0
+    container_name: datamind-mlflow
+    <<: [*restart-policy, *logging]
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql://datamind:changeme@postgres:5432/datamind_core
+      --default-artifact-root s3://datamind-models/mlflow/
+      --serve-artifacts
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    profiles: ["dev", "core"]
+
+  # ============================================================
+  # Phase 4 — JupyterHub (Tenant-Isolated Kernels, start < 10s)
+  # ============================================================
+  jupyterhub:
+    image: quay.io/jupyterhub/jupyterhub:5.2.1
+    container_name: datamind-jupyterhub
+    <<: [*restart-policy, *logging]
+    command: jupyterhub --config /srv/jupyterhub/jupyterhub_config.py
+    environment:
+      JUPYTERHUB_ADMIN_PASSWORD: ${JUPYTERHUB_ADMIN_PASSWORD:-changeme}
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: datamind_core
+      POSTGRES_USER: ${POSTGRES_USER:-datamind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      DATAMIND_API_URL: http://api:8000
+    volumes:
+      - ./infra/docker/jupyterhub/jupyterhub_config.py:/srv/jupyterhub/jupyterhub_config.py:ro
+      - jupyterhub-data:/srv/jupyterhub
+    ports:
+      - "8888:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/hub/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    profiles: ["dev", "core"]
+
+  # ============================================================
+  # Phase 4 — Data Science Workbench (AutoML + Forecasting + Causal + Deploy)
+  # ============================================================
+  ds-workbench:
+    build:
+      context: ./services/ds-workbench
+    container_name: datamind-ds-workbench
+    <<: [*restart-policy, *logging]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      MINIO_BUCKET: datamind-models
+      MINIO_SECURE: "false"
+      LITELLM_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-litellm-dev}
+      RLM_MODEL: ${RLM_MODEL:-deepseek/deepseek-r1:32b}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-datamind}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-datamind}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      OTEL_ENDPOINT: http://otel-collector:4317
+      DWAVE_API_TOKEN: ${DWAVE_API_TOKEN:-}
+    ports:
+      - "8120:8120"
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8120/health/liveness').raise_for_status()"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    profiles: ["dev", "core"]
+
 # ============================================================
 # Named Volumes
 # ============================================================
@@ -998,6 +1102,7 @@ volumes:
   prometheus-data:
   grafana-data:
   loki-data:
+  jupyterhub-data:
 
 # ============================================================
 # Networks
