@@ -783,6 +783,44 @@ services:
     profiles: ["dev", "core"]
 
   # ============================================================
+  # Day 15 — Dashboard API (Phase 3: REST CRUD + WebSocket + NL)
+  # Port: 8110
+  # ============================================================
+  dashboard-api:
+    build:
+      context: ./services/dashboard-api
+    container_name: datamind-dashboard-api
+    <<: [*restart-policy, *logging]
+    environment:
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-datamind}:${POSTGRES_PASSWORD:-datamind_pass}@postgres:5432/datamind_core
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_AGENT_EVENTS: agent.events
+      KAFKA_GROUP_ID: dashboard-api
+      ORCHESTRATION_ENGINE_URL: http://orchestration-engine:8060
+      MCP_REPORT_GENERATOR_URL: http://mcp-report-generator:8080/mcp/
+      OTEL_ENDPOINT: http://otel-collector:4317
+      LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-lf-pk-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-lf-sk-dev}
+    ports:
+      - "8110:8110"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      orchestration-engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8110/health/liveness').raise_for_status()"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    profiles: ["dev", "core"]
+
+  # ============================================================
   # Day 11 — MCP Visualization Server (ECharts 5, 25 chart types)
   # ============================================================
   mcp-visualization:

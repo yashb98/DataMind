@@ -1,0 +1,15 @@
+name = "datamind-chart-suggestions"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[ai]
+binding = "AI"
+
+[vars]
+SERVICE_NAME = "chart-suggestions-worker"
+MAX_LATENCY_MS = "15"
+
+[[routes]]
+pattern = "chart-suggestions.datamind.workers.dev/*"
+zone_name = "datamind.workers.dev"
