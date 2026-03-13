@@ -1043,6 +1043,53 @@ services:
     profiles: ["dev", "core"]
 
   # ============================================================
+  # Phase 5 — RAG API (4-Tier Memory, GraphRAG, MMR, RAGAS, Narrative, DSR)
+  # Port: 8130
+  # ============================================================
+  rag-api:
+    build: ./services/rag-api
+    container_name: datamind-rag-api
+    <<: [*restart-policy, *logging]
+    ports:
+      - "8130:8130"
+    environment:
+      - REDIS_URL=redis://:datamind@redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - MONGODB_URL=mongodb://datamind:datamind@mongodb:27017/datamind_memory
+      - POSTGRES_URL=postgresql://datamind:datamind@postgres:5432/datamind
+      - NEO4J_URL=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=datamind123
+      - EMBEDDING_SERVICE_URL=http://embedding:8030
+      - LITELLM_URL=http://litellm:4000
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - OTLP_ENDPOINT=http://otel-collector:4317
+      - MINIO_URL=http://minio:9000
+      - MINIO_ACCESS_KEY=datamind
+      - MINIO_SECRET_KEY=datamind123
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8130/health/liveness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - dev
+      - core
+
+  # ============================================================
   # Phase 4 — Data Science Workbench (AutoML + Forecasting + Causal + Deploy)
   # ============================================================
   ds-workbench:
